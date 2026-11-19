@@ -20,6 +20,7 @@ import openpi.models.tokenizer as _tokenizer
 import openpi.policies.aloha_policy as aloha_policy
 import openpi.policies.droid_policy as droid_policy
 import openpi.policies.libero_policy as libero_policy
+import openpi.policies.piper_policy as piper_policy
 import openpi.shared.download as _download
 import openpi.shared.normalize as _normalize
 import openpi.training.droid_rlds_dataset as droid_rlds_dataset
@@ -259,6 +260,39 @@ class LeRobotAlohaDataConfig(DataConfigFactory):
         data_transforms = _transforms.Group(
             inputs=[aloha_policy.AlohaInputs(adapt_to_pi=self.adapt_to_pi)],
             outputs=[aloha_policy.AlohaOutputs(adapt_to_pi=self.adapt_to_pi)],
+        )
+        if self.use_delta_joint_actions:
+            delta_action_mask = _transforms.make_bool_mask(6, -1, 6, -1)
+            data_transforms = data_transforms.push(
+                inputs=[_transforms.DeltaActions(delta_action_mask)],
+                outputs=[_transforms.AbsoluteActions(delta_action_mask)],
+            )
+
+        model_transforms = ModelTransformFactory(default_prompt=self.default_prompt)(model_config)
+
+        return dataclasses.replace(
+            self.create_base_config(assets_dirs, model_config),
+            repack_transforms=self.repack_transforms,
+            data_transforms=data_transforms,
+            model_transforms=model_transforms,
+            action_sequence_keys=self.action_sequence_keys,
+        )
+
+
+@dataclasses.dataclass(frozen=True)
+class LeRobotPiperDataConfig(LeRobotAlohaDataConfig):
+    """Data config for bimanual Piper (ALOHA-style) LeRobot datasets.
+
+    Same as LeRobotAlohaDataConfig, but maps the 32-dim Piper state/action to the
+    14-dim joint+gripper space via PiperInputs/PiperOutputs. No Interbotix ALOHA
+    joint-flip / gripper-angular transform is applied (`adapt_to_pi` is ignored).
+    """
+
+    @override
+    def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
+        data_transforms = _transforms.Group(
+            inputs=[piper_policy.PiperInputs()],
+            outputs=[piper_policy.PiperOutputs()],
         )
         if self.use_delta_joint_actions:
             delta_action_mask = _transforms.make_bool_mask(6, -1, 6, -1)
@@ -824,6 +858,43 @@ _CONFIGS = [
         weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
         num_train_steps=20_000,
         batch_size=64,
+    ),
+    TrainConfig(
+        # Fine-tune pi0.5 on the bimanual Piper CobotMagic `items_handover` task.
+        # Train on the 50-episode train split (see scripts/split_cobotmagic_50_10.py);
+        # watch the training loss and eval on the 10-episode val split to early-stop.
+        name="pi05_piper",
+        model=pi0_config.Pi0Config(pi05=True),
+        data=LeRobotPiperDataConfig(
+            repo_id="RoboSynChallenge/cobotmagic_Real_items_handover_train",
+            default_prompt="Pick up the pen, hand it over to the other arm and then place it in to the pen holder",
+            repack_transforms=_transforms.Group(
+                inputs=[
+                    _transforms.RepackTransform(
+                        {
+                            "images": {
+                                "cam_high": "observation.images.cam_high",
+                                "cam_left_wrist": "observation.images.cam_left_wrist",
+                                "cam_right_wrist": "observation.images.cam_right_wrist",
+                            },
+                            "state": "observation.state",
+                            "actions": "action",
+                        }
+                    )
+                ]
+            ),
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=50,
+            peak_lr=1e-5,
+            decay_steps=1000,
+            decay_lr=1e-5,
+        ),
+        num_train_steps=1000,  # 50 train episodes; watch loss, adjust / early-stop
+        batch_size=32,
+        save_interval=200,  # ~5 checkpoints over 1000 steps (~25GB each incl. optimizer)
+        keep_period=200,  # keep every saved step (200,400,...) so val loss can pick the best
     ),
     #
     # Fine-tuning DROID configs.
