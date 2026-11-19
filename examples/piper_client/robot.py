@@ -93,6 +93,28 @@ def _clamp_joints(joints_rad: np.ndarray, limits: list[tuple[float, float]]) -> 
     return np.clip(joints_rad, lo, hi)
 
 
+def _euler_deg_to_rot6d(rpy_deg: np.ndarray) -> np.ndarray:
+    """Convert Euler angles ``[rx, ry, rz]`` (deg, extrinsic XYZ) to rot6d.
+
+    rot6d = first two columns of the 3x3 rotation matrix, flattened.
+    TODO: confirm the Euler convention (extrinsic XYZ vs ZYX) matches the dataset.
+    """
+    rx, ry, rz = np.radians(rpy_deg)
+    cx, sx = math.cos(rx), math.sin(rx)
+    cy, sy = math.cos(ry), math.sin(ry)
+    cz, sz = math.cos(rz), math.sin(rz)
+
+    # R = Rz @ Ry @ Rx (extrinsic XYZ).
+    R = np.array(
+        [
+            [cy * cz, cz * sx * sy - cx * sz, cx * cz * sy + sx * sz],
+            [cy * sz, cx * cz + sx * sy * sz, -cz * sx + cx * sy * sz],
+            [-sy, cy * sx, cx * cy],
+        ]
+    )
+    return R[:, :2].reshape(-1)
+
+
 class PiperArm:
     """One Piper arm + its gripper, behind a minimal joint-control API."""
 
@@ -100,6 +122,7 @@ class PiperArm:
         self.name = name
         self.cfg = cfg
         self._iface: Any = None
+        self._fk_calibrated = False
 
     # ------------------------------------------------------------------ #
     # Lifecycle
@@ -150,6 +173,24 @@ class PiperArm:
         if self.cfg.gripper_invert:
             norm = 1.0 - norm
         return norm
+
+    def read_ee(self) -> tuple[np.ndarray, np.ndarray]:
+        """Return ``(ee_pos_m, ee_rot6d)`` from Piper FK, for the 32-dim FastWAM state.
+
+        ``GetFK`` returns 6 joint poses; ``[-1]`` is the end effector
+        ``[x, y, z (mm), rx, ry, rz (deg)]``. ee_pos is returned in meters and
+        rot6d from the first two columns of the Euler rotation matrix.
+
+        NOTE: the rot6d convention must match the dataset's
+        ``convert_piper_hdf5_to_lerobot.py``; verify before relying on it.
+        """
+        if not self._fk_calibrated:
+            self._iface.EnableFkCal()
+            self._fk_calibrated = True
+        ee = self._iface.GetFK("control")[-1]  # [x, y, z(mm), rx, ry, rz(deg)]
+        xyz = np.asarray(ee[:3], dtype=np.float64) / 1000.0  # mm -> m
+        rot6d = _euler_deg_to_rot6d(np.asarray(ee[3:6], dtype=np.float64))
+        return xyz, rot6d
 
     # ------------------------------------------------------------------ #
     # Write

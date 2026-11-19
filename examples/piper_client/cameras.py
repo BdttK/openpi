@@ -126,3 +126,11 @@ class CameraGroup:
             except Exception as exc:  # pragma: no cover
                 logger.warning("error releasing camera %s: %s", key, exc)
         self._devices.clear()
+
+
+def concat_cameras(frames: dict[str, np.ndarray], keys: list[str]) -> np.ndarray:
+    """Stack ``frames`` along the width into one image ``(H, 3W, 3)`` for FastWAM."""
+    imgs = [np.asarray(frames[k], dtype=np.uint8) for k in keys]
+    if len({im.shape[:2] for im in imgs}) > 1:
+        raise ValueError(f"camera shapes differ: {[im.shape for im in imgs]}")
+    return np.concatenate(imgs, axis=1)  # (H, 3W, 3)
