@@ -1,0 +1,26 @@
+# Station config for the bimanual Piper (CobotMagic) host.
+# Copy to your own file and fill in the station-specific values.
+
+robot:
+  left:
+    can_port: can_left        # CAN interface for the left arm
+    can_id: 1
+  right:
+    can_port: can_piper       # CAN interface for the right arm
+    can_id: 1
+  dh_is_offset: 1             # 1 = new DH params (after S-V1.6-3)
+  move_spd_rate_ctrl: 100     # MOVE speed %, 0..100
+  gripper_effort: 1000        # 0.001 N*m (1000 = 1 N*m)
+  gripper_open_mm: 100.0      # full-open gap in mm
+  gripper_invert: false       # flip open/close if the gripper reads backwards
+
+cameras:
+  keys: [cam_high, cam_left_wrist, cam_right_wrist]
+  width: 640
+  height: 480
+  fps: 10                     # match the dataset (10 fps)
+  backend: realsense          # mock | opencv | realsense
+  device_ids:
+    cam_high: "327122071526"          # fill in your RealSense serials
+    cam_left_wrist: "327122072690"
+    cam_right_wrist: "335622071161"

@@ -14,16 +14,24 @@ Piper host (this script)          GPU machine (training server / >=24GB GPU)
    ◀───────────────────────────
 ```
 
+## Files (self-contained)
+
+| File | Role |
+|---|---|
+| `main.py` | entry point: WebSocket client + rollout loop |
+| `robot.py` | dual-arm Piper driver (`piper_sdk` V3) |
+| `cameras.py` | camera group (mock / opencv / realsense) |
+| `action_space.py` | 14-dim / 32-dim action & proprio layout |
+| `config.yaml` | station config (CAN ports, camera serials, limits) |
+
 ## Dependencies (Piper host)
 
 ```bash
-# 1) lightweight openpi client (no JAX/torch)
+# lightweight openpi client (no JAX / torch)
 cd openpi/packages/openpi-client && pip install -e .
 
-# 2) hardware drivers from FastWAM-RL (robots/ + cameras/ + action_space.py)
-#    -- pass their directory with --deployment-dir
-# 3) Piper SDK + RealSense (already used by the FastWAM-RL deployment)
-pip install piper_sdk python-can pyrealsense2
+# robot + camera + config
+pip install piper_sdk python-can pyrealsense2 PyYAML
 ```
 
 ## Usage
@@ -34,13 +42,10 @@ pip install piper_sdk python-can pyrealsense2
 python examples/piper_client/main.py --host <GPU_MACHINE_IP> --dry-run
 ```
 
-**Real robot**:
+**Real robot** (edit `config.yaml` first):
 
 ```bash
-python examples/piper_client/main.py \
-    --host <GPU_MACHINE_IP> \
-    --deployment-dir /path/to/FastWAM-RL/deployment \
-    --config /path/to/FastWAM-RL/deployment/configs/cobotmagic_real.yaml
+python examples/piper_client/main.py --host <GPU_MACHINE_IP> --config config.yaml
 ```
 
 Key flags: `--episodes`, `--steps`, `--control-hz` (default 10, matches dataset),

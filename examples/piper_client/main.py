@@ -1,53 +1,47 @@
-"""openpi (pi05_piper) real-robot client for the bimanual Piper station.
+"""Real-robot client for the openpi ``pi05_piper`` policy on the bimanual Piper.
 
 Runs on the **Piper host** (not the GPU machine). Captures 3 cameras + dual-arm
 joint/gripper state, streams them over WebSocket to the openpi policy server,
-receives 14-dim action chunks, and executes them on the two Piper arms.
+receives 14-dim action chunks, and drives the two Piper arms.
 
-This reuses the hardware drivers from the FastWAM-RL checkout
-(``deployment/robots/cobotmagic_piper.py``, ``deployment/cameras/camera_group.py``,
-``deployment/action_space.py``), passed in via ``--deployment-dir``. The only
-policy-side dependency is the lightweight ``openpi-client`` package.
+Self-contained: imports ``robot`` / ``cameras`` / ``action_space`` from this
+directory (no external deployment checkout). The only external deps are the
+lightweight ``openpi-client``, ``piper_sdk``, and a camera backend.
 
 Quick start (on the Piper host):
 
-  1. Install the lightweight client (no JAX / torch needed):
+  1. Install deps:
      cd openpi/packages/openpi-client && pip install -e .
+     pip install piper_sdk python-can pyrealsense2 PyYAML
 
-  2. Smoke test (no robot, no camera, zeros in / zeros out):
+  2. Smoke test (no robot, no camera):
      python examples/piper_client/main.py --host <GPU_MACHINE_IP> --dry-run
 
-  3. Real robot:
-     python examples/piper_client/main.py --host <GPU_MACHINE_IP> \
-         --deployment-dir /path/to/FastWAM-RL/deployment \
-         --config /path/to/cobotmagic_real.yaml
+  3. Real robot (edit config.yaml first):
+     python examples/piper_client/main.py --host <GPU_MACHINE_IP> --config config.yaml
 """
 
 from __future__ import annotations
 
 import argparse
 import logging
-import sys
 import time
 from pathlib import Path
 
 import numpy as np
+import yaml
 
 from openpi_client import image_tools
 from openpi_client import websocket_client_policy
+
+from action_space import PROPRIO_DIM, build_proprio_32, split_action_14
+from cameras import CameraGroup, CameraGroupConfig
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger("piper_client")
 
 # Task instruction. Override with --prompt.
 PROMPT = "Pick up the pen, hand it over to the other arm and then place it in to the pen holder"
-
-# Model output is 14-dim: [left joints(6), left gripper(1), right joints(6), right gripper(1)].
-ACTION_DIM = 14
-# Dataset proprio layout is 32-dim (16 per arm). The policy only reads the
-# joint+gripper dims (indices 0..6 and 16..22); ee_pos/ee_rot6d are dropped,
-# so we fill them with zeros and skip forward kinematics.
-PROPRIO_DIM = 32
 
 
 # --------------------------------------------------------------------------- #
@@ -60,7 +54,7 @@ def _to_chw(img_hwc: np.ndarray) -> np.ndarray:
 
 
 def build_observation(frames: dict, proprio_32: np.ndarray, prompt: str) -> dict:
-    """Build the observation dict the pi05_piper policy expects."""
+    """Build the observation dict the ``pi05_piper`` policy expects."""
     return {
         "observation.images.cam_high": _to_chw(frames["cam_high"]),
         "observation.images.cam_left_wrist": _to_chw(frames["cam_left_wrist"]),
@@ -71,15 +65,10 @@ def build_observation(frames: dict, proprio_32: np.ndarray, prompt: str) -> dict
 
 
 def read_proprio_32(robot) -> np.ndarray:
-    """32-dim proprio with joints+gripper, ee_pos/ee_rot6d zeroed (unused by policy)."""
-    from action_space import build_proprio
-
-    zeros3 = np.zeros(3, dtype=np.float64)
-    zeros6 = np.zeros(6, dtype=np.float64)
-    return build_proprio(
-        robot.left.read_joints_rad(), robot.left.read_gripper_norm(), zeros3, zeros6,
-        robot.right.read_joints_rad(), robot.right.read_gripper_norm(), zeros3, zeros6,
-    )
+    """Read 14-dim joint+gripper from the robot and build the 32-dim observation."""
+    jg = robot.read_joint_gripper()  # [lj(6), lg, rj(6), rg]
+    lj, lg, rj, rg = split_action_14(jg)
+    return build_proprio_32(lj, lg, rj, rg)
 
 
 # --------------------------------------------------------------------------- #
@@ -97,8 +86,6 @@ def rollout(
     exec_horizon: int,
 ) -> None:
     """Run episodes with standard action-chunking: query -> execute N steps -> query."""
-    from action_space import extract_joint_command
-
     step_s = 1.0 / max(1.0, control_hz)
 
     for ep in range(n_episodes):
@@ -106,14 +93,12 @@ def rollout(
         pending: list = []  # queue of (lj, lg, rj, rg)
 
         for _ in range(max_steps):
-            # Refill the queue when empty (re-query the policy server).
             if not pending:
                 frames = cameras.read()
                 proprio = read_proprio_32(robot) if robot is not None else np.zeros(PROPRIO_DIM)
-                obs = build_observation(frames, proprio, prompt)
-                action_chunk = client.infer(obs)["actions"]  # (action_horizon, 14)
+                action_chunk = client.infer(build_observation(frames, proprio, prompt))["actions"]
                 for a in action_chunk[:exec_horizon]:
-                    pending.append(extract_joint_command(a, ACTION_DIM))
+                    pending.append(split_action_14(a))
 
             lj, lg, rj, rg = pending.pop(0)
 
@@ -134,43 +119,27 @@ def main() -> None:
     p.add_argument("--host", default="localhost", help="policy server host (GPU machine IP)")
     p.add_argument("--port", type=int, default=8000)
     p.add_argument("--api-key", default=None, help="optional policy server API key")
-    p.add_argument("--deployment-dir", default=None,
-                   help="path to FastWAM-RL/deployment (for robots/ + cameras/ + action_space)")
-    p.add_argument("--config", default=None,
-                   help="YAML with `robot` and `cameras` blocks (same format as rollout_cobotmagic.py)")
+    p.add_argument("--config", default="config.yaml", help="station config (robot + cameras)")
     p.add_argument("--dry-run", action="store_true", help="no robot, no camera; zeros in / zeros out")
     p.add_argument("--episodes", type=int, default=1)
     p.add_argument("--steps", type=int, default=300, help="max steps per episode")
     p.add_argument("--control-hz", type=float, default=10.0)
-    p.add_argument("--exec-horizon", type=int, default=8, help="steps to execute per policy query")
+    p.add_argument("--exec-horizon", type=int, default=8, help="steps executed per policy query")
     p.add_argument("--prompt", default=PROMPT)
     args = p.parse_args()
 
-    # Resolve the FastWAM-RL deployment drivers.
-    deployment_dir = Path(args.deployment_dir).resolve() if args.deployment_dir else None
-    if deployment_dir is not None:
-        sys.path.insert(0, str(deployment_dir))
-
     # Build hardware (or mocks for dry-run).
     robot = None
-    cameras = None
     if args.dry_run:
-        from cameras.camera_group import CameraGroup, CameraGroupConfig
-
         cameras = CameraGroup(CameraGroupConfig(keys=["cam_high", "cam_left_wrist", "cam_right_wrist"],
                                                 backend="mock"))
         logger.info("dry-run: mock cameras, no robot")
     else:
-        if deployment_dir is None or args.config is None:
-            p.error("--deployment-dir and --config are required unless --dry-run")
-        import yaml
-
-        from cameras.camera_group import build_camera_group
-        from robots.cobotmagic_piper import build_robot
-
         cfg = yaml.safe_load(Path(args.config).read_text())
-        cameras = build_camera_group(cfg["cameras"])
-        robot = build_robot(cfg["robot"], PROPRIO_DIM)
+        cameras = CameraGroup(CameraGroupConfig(**cfg["cameras"]))
+        from robot import build_robot
+
+        robot = build_robot(cfg["robot"])
         robot.connect()
         logger.info("robot + cameras connected")
 
