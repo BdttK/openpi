@@ -87,8 +87,12 @@ class PiperInputs(transforms.DataTransformFn):
 
 @dataclasses.dataclass(frozen=True)
 class PiperOutputs(transforms.DataTransformFn):
-    """Outputs for the bimanual Piper policy (14-dim joint+gripper actions)."""
+    """Outputs for the bimanual Piper policy (14-dim joint+gripper actions).
+
+    The model outputs 32-dim actions (Pi0Config action_dim=32): the 14 real
+    joint+gripper dims sit at [0:14], the rest are zero padding. Slice [0:14].
+    """
 
     def __call__(self, data: dict) -> dict:
-        actions = np.asarray(data["actions"], dtype=np.float32)[:, _SELECT_14]  # [T, 32] -> [T, 14]
+        actions = np.asarray(data["actions"], dtype=np.float32)[:, :14]  # [T, 32] -> [T, 14]
         return {"actions": actions}
