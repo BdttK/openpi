@@ -18,7 +18,7 @@ so 10/50 is trivial to do manually).
 """
 
 import numpy as np
-from lerobot.datasets.lerobot_dataset import LeRobotDataset
+from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
 
 SRC = "RoboSynChallenge/cobotmagic_Real_items_handover"
 DST_TRAIN = "RoboSynChallenge/cobotmagic_Real_items_handover_train"
