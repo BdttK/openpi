@@ -168,3 +168,87 @@ python deployment/rollout_openpi.py \
 2. 夹爪 0..1（mm/100）、关节弧度，与数据集一致。
 3. 控制频率对齐数据集 10Hz（`--control-hz 10`）。
 4. 相机顺序、分辨率（224 由 `rollout_openpi.py` 自动 resize）保持一致。
+
+
+me:
+
+一、服务器（这台，10.30.40.5）
+
+  启动 π₀.₅ 服务（前台，推荐先这样看日志）
+
+  cd /root/gk/openpi
+  CUDA_VISIBLE_DEVICES=2 uv run --no-dev scripts/serve_policy.py \
+    --port 8000 \
+    policy:checkpoint \
+    --policy.config=pi05_piper \
+    --policy.dir=/root/gk/openpi/checkpoints/pi05_cobotmagic/400
+
+  ▎ --port 必须在 policy:checkpoint 前面，否则 tyro 报 Unrecognized
+  ▎ options。
+
+  后台启动（关终端也不停）
+
+  cd /root/gk/openpi
+  CUDA_VISIBLE_DEVICES=2 nohup uv run --no-dev scripts/serve_policy.py
+  \
+    --port 8000 \
+    policy:checkpoint \
+    --policy.config=pi05_piper \
+    --policy.dir=/root/gk/openpi/checkpoints/pi05_cobotmagic/400 \
+    > /root/gk/ops/serve_pi05.log 2>&1 &
+
+  或者用封装脚本：
+
+  CUDA_VISIBLE_DEVICES=2 PORT=8000 bash /root/gk/ops/serve_pi05.sh
+
+  检查 / 停止
+
+  # 健康检查（本机）
+  curl http://127.0.0.1:8000/healthz
+  # 健康检查（台式机访问）
+  curl http://10.30.40.5:8000/healthz
+
+  # 看日志
+  tail -f /root/gk/ops/serve_pi05.log
+
+  # 停止
+  pkill -f "serve_policy.py --port 8000"
+
+  本机推理自测（服务起来后）：
+
+  cd /root/gk/openpi && uv run --no-dev python
+  /root/gk/ops/smoke_client.py
+
+  ---
+
+  二、Piper 台式机（部署侧）
+
+  先在台式机装好客户端依赖（只需一次）：
+
+  pip install -e <openpi_repo>/packages/openpi-client
+  pip install piper_sdk python-can
+  pip install pyrealsense2        # 或 opencv-python
+
+  CAN 激活 + 配置检查（move_spd_rate_ctrl 首跑设 20、急停装好）：
+
+  piper-can find
+  piper-can activate can0 1000000
+  # 改 deployment/configs/cobotmagic_real.yaml：CAN 
+  口、can_id、夹爪行程、相机序列号
+
+  ① dry-run（不碰机器人/相机）
+
+  cd <FastWAM-RL_repo>
+  python deployment/rollout_openpi.py --host 10.30.40.5 --dry-run
+
+  看到 dry-run action: lj=... rg=... 说明台式机 → 服务器推理 →
+  回动作链路通。
+
+  ② 真机
+
+  python deployment/rollout_openpi.py \
+    --host 127.0.0.1 \
+    --config deployment/configs/cobotmagic_real.yaml \
+    --wait-enter --episodes 1 --steps 0
+
+  ---
